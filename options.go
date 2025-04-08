@@ -59,6 +59,7 @@ type Options struct {
 	LevelSizeMultiplier int
 	TableSizeMultiplier int
 	MaxLevels           int
+	PartitionFanOut     int
 
 	VLogPercentile float64
 	ValueThreshold int64
@@ -134,6 +135,7 @@ func DefaultOptions(path string) Options {
 		TableSizeMultiplier: 2,
 		LevelSizeMultiplier: 10,
 		MaxLevels:           7,
+		PartitionFanOut:     5,
 		NumGoroutines:       8,
 		MetricsEnabled:      true,
 
@@ -481,6 +483,14 @@ func (opt Options) WithLevelSizeMultiplier(val int) Options {
 // The default value of MaxLevels is 7.
 func (opt Options) WithMaxLevels(val int) Options {
 	opt.MaxLevels = val
+	return opt
+}
+
+// WithPartitionFanOut returns a new Options value with PartitionFanOut set to the given value.
+// Fan out of number of hash-partitions of keyspace allowed to the next level of LSM.
+// The default value of PartitionFanOut is 5
+func (opt Options) WithPartitionFanOut(val int) Options {
+	opt.PartitionFanOut = val
 	return opt
 }
 
