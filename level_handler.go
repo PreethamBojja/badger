@@ -25,6 +25,12 @@ type levelHandler struct {
 	totalSize      int64
 	totalStaleSize int64
 
+	// Map partition ID to a slice of SSTables for that partition.
+	partitionTables map[int][]*table.Table
+	// Map partition ID to the accumulated memory usage for that partition.
+	partitionMemUsage map[int]int64
+	partitionMu sync.Mutex
+
 	// The following are initialized once and const.
 	level    int
 	strLevel string
@@ -45,6 +51,34 @@ func (s *levelHandler) getTotalSize() int64 {
 	s.RLock()
 	defer s.RUnlock()
 	return s.totalSize
+}
+
+// updatePartitionMemUsage adds usage (in bytes) to the given partition ID.
+func (lh *levelHandler) updatePartitionMemUsage(pid int, usage int64) {
+	lh.partitionMu.Lock()
+	defer lh.partitionMu.Unlock()
+	lh.partitionMemUsage[pid] += usage
+}
+
+// getPartitionMemUsage returns the memory usage for the specified partition.
+func (lh *levelHandler) getPartitionMemUsage(pid int) int64 {
+	lh.partitionMu.Lock()
+	defer lh.partitionMu.Unlock()
+	return lh.partitionMemUsage[pid]
+}
+
+// resetPartitionMemUsage resets the memory usage counter for the specified partition.
+func (lh *levelHandler) resetPartitionMemUsage(pid int) {
+	lh.partitionMu.Lock()
+	defer lh.partitionMu.Unlock()
+	lh.partitionMemUsage[pid] = 0
+}
+
+// registerPartitionTable registers a new SSTable for the given partition ID.
+func (lh *levelHandler) registerPartitionTable(pid int, tbl *table.Table) {
+	lh.partitionMu.Lock()
+	defer lh.partitionMu.Unlock()
+	lh.partitionTables[pid] = append(lh.partitionTables[pid], tbl)
 }
 
 // initTables replaces s.tables with given tables. This is done during loading.
@@ -176,6 +210,8 @@ func newLevelHandler(db *DB, level int) *levelHandler {
 		level:    level,
 		strLevel: fmt.Sprintf("l%d", level),
 		db:       db,
+		partitionTables:   make(map[int][]*table.Table),
+		partitionMemUsage: make(map[int]int64),
 	}
 }
 

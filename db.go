@@ -1097,6 +1097,104 @@ func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
 	return err
 }
 
+func (db *DB) flushPartition(level int, pid int, entries []*Entry) error {
+	bopts := buildTableOptions(db)
+	builder := table.NewTableBuilder(bopts)
+	lh := db.lc.levels[level] 
+	defer builder.Close()
+
+	// Add each entry from the partition into the builder.
+	for _, e := range entries {
+		vs := y.ValueStruct{
+			Value:     e.Value,
+			ExpiresAt: e.ExpiresAt,
+			Meta:      e.meta,
+			UserMeta:  e.UserMeta,
+		}
+	
+		var vp valuePointer
+		if vs.Meta&bitValuePointer > 0 {
+			vp.Decode(vs.Value)
+		}
+	
+		builder.Add(e.Key, vs, vp.Len)
+	}	
+
+	if builder.Empty() {
+		builder.Finish()
+		return nil
+	}
+
+	fileID := db.lc.reserveFileID()
+	var tbl *table.Table
+	var err error
+
+	if db.opt.InMemory {
+		data := builder.Finish()
+		tbl, err = table.OpenInMemoryTable(data, fileID, &bopts)
+	} else {
+		tbl, err = table.CreateTable(table.NewFilename(fileID, db.opt.Dir), builder)
+	}
+	if err != nil {
+		return y.Wrap(err, "error while creating table")
+	}
+
+	// Register the new SSTable in the level's partition mapping.
+	lh.registerPartitionTable(pid, tbl)
+
+	// Update the partition's memory usage by adding the size of this new table.
+	lh.partitionMu.Lock()
+	lh.partitionMemUsage[pid] += int64(tbl.Size())
+	lh.partitionMu.Unlock()
+
+	return nil
+}
+
+func computePartitionID(key []byte, level int, fanout int) int {
+    // Compute number of partitions = fanout^(level+1)
+    partitionCount := 1
+    for i := 0; i <= level; i++ {
+        partitionCount *= fanout
+    }
+    h := y.Hash(key) // Assume y.Hash returns a uint32.
+    return int(h % uint32(partitionCount))
+}
+
+func (db *DB) handleMemTablePartitionFlush(mt *memTable) error {
+	level := 0 // We flush memtables to level 0.
+
+	partitionEntries := make(map[int][]*Entry)
+	itr := mt.sl.NewUniIterator(false)
+	defer itr.Close()
+
+	// Partition the entries.
+	for itr.Rewind(); itr.Valid(); itr.Next() {
+		key := itr.Key()
+		vs := itr.Value()
+		entry := &Entry{
+			Key:       key,
+			Value:     vs.Value,
+			ExpiresAt: vs.ExpiresAt,
+			UserMeta:  vs.UserMeta,
+			meta:      vs.Meta,
+		}
+		pid := computePartitionID(key, level, db.opt.PartitionFanOut)
+		partitionEntries[pid] = append(partitionEntries[pid], entry)
+	}
+
+	// Flush each partition separately.
+	for pid, entries := range partitionEntries {
+		if len(entries) == 0 {
+			continue
+		}
+		if err := db.flushPartition(level, pid, entries); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+
 // flushMemtable must keep running until we send it an empty memtable. If there
 // are errors during handling the memtable flush, we'll retry indefinitely.
 func (db *DB) flushMemtable(lc *z.Closer) {
@@ -1108,8 +1206,7 @@ func (db *DB) flushMemtable(lc *z.Closer) {
 		}
 
 		for {
-			if err := db.handleMemTableFlush(mt, nil); err != nil {
-				// Encountered error. Retry indefinitely.
+			if err := db.handleMemTablePartitionFlush(mt); err != nil {
 				db.opt.Errorf("error flushing memtable to disk: %v, retrying", err)
 				time.Sleep(time.Second)
 				continue
