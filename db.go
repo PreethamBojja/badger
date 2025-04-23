@@ -131,10 +131,6 @@ func checkAndSetOptions(opt *Options) error {
 		return errors.New("Cannot have 1 compactor. Need at least 2")
 	}
 
-	if opt.PartitionFanOut < 1{
-		return errors.Errorf("Partition fan out must be a positive number. Got %d", opt.PartitionFanOut)
-	}
-	
 	if opt.InMemory && (opt.Dir != "" || opt.ValueDir != "") {
 		return errors.New("Cannot use badger in Disk-less mode with Dir or ValueDir set")
 	}
