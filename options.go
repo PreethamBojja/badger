@@ -118,6 +118,10 @@ type Options struct {
 	maxBatchSize  int64 // max batch size in bytes
 
 	maxValueThreshold float64
+	// PartitionFanOut is the number of hash-range partitions per parent partition.
+    // Level 0 has PartitionFanOut partitions; each of those fans out into PartitionFanOut 
+    // subpartitions at Level 1, and so on.
+	PartitionFanOut int
 }
 
 // DefaultOptions sets a list of recommended options for good performance.
@@ -136,6 +140,7 @@ func DefaultOptions(path string) Options {
 		NumGoroutines:       8,
 		MetricsEnabled:      true,
 
+		PartitionFanOut:         1, // No partitioning
 		NumCompactors:           4, // Run at least 2 compactors. Zero-th compactor prioritizes L0.
 		NumLevelZeroTables:      5,
 		NumLevelZeroTablesStall: 15,
@@ -599,6 +604,13 @@ func (opt Options) WithValueLogFileSize(val int64) Options {
 // The default value of ValueLogMaxEntries is one million (1000000).
 func (opt Options) WithValueLogMaxEntries(val uint32) Options {
 	opt.ValueLogMaxEntries = val
+	return opt
+}
+
+// WithPartitionFanOut sets the number of child partitions.
+// The default value of PartitionFanOut is 1.
+func (opt Options) WithPartitionFanOut(val int) Options {
+	opt.PartitionFanOut = val
 	return opt
 }
 
