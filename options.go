@@ -7,7 +7,6 @@ package badger
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -144,7 +143,7 @@ func DefaultOptions(path string) Options {
 		BloomFalsePositive:      0.01,
 		BlockSize:               4 * 1024,
 		SyncWrites:              false,
-		NumVersionsToKeep:       math.MaxInt32,
+		NumVersionsToKeep:       1,
 		CompactL0OnClose:        false,
 		VerifyValueChecksum:     false,
 		Compression:             options.Snappy,
@@ -388,7 +387,7 @@ func (opt Options) WithSyncWrites(val bool) Options {
 //
 // NumVersionsToKeep sets how many versions to keep per key at most.
 //
-// The default value of NumVersionsToKeep is math.MaxInt32.
+// The default value of NumVersionsToKeep is 1.
 func (opt Options) WithNumVersionsToKeep(val int) Options {
 	opt.NumVersionsToKeep = val
 	return opt
