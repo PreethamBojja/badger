@@ -1061,7 +1061,7 @@ func buildL0Table(iter y.Iterator, dropPrefixes [][]byte, bopts table.Options) *
 }
 
 // handleMemTableFlush must be run serially.
-func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
+func (db *DB) handleMemTableFlushClassic(mt *memTable, dropPrefixes [][]byte) error {
 	bopts := buildTableOptions(db)
 	itr := mt.sl.NewUniIterator(false)
 	builder := buildL0Table(itr, nil, bopts)
@@ -1091,6 +1091,76 @@ func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
 	err = db.lc.addLevel0Table(tbl) // This will incrRef
 	_ = tbl.DecrRef()               // Releases our ref.
 	return err
+}
+
+func (db *DB) handleMemTableFlushPartitioned(mt *memTable) error {
+    fanOut := db.opt.PartitionFanOut
+
+    // We'll temporarily hold key+ValueStruct pairs
+    type kv struct {
+        key []byte
+        vs  y.ValueStruct
+    }
+
+    // 1) Group all entries by partition ID
+    parts := make(map[uint32][]kv, fanOut)
+    itr := mt.sl.NewUniIterator(false)
+    for itr.Rewind(); itr.Valid(); itr.Next() {
+        // Copy the key so it doesn’t get overwritten by the skiplist
+        key := append([]byte(nil), itr.Key()...)
+        vs := itr.Value()
+        pid := getPartitionID(0, key, fanOut)
+        parts[pid] = append(parts[pid], kv{key, vs})
+    }
+    itr.Close()
+
+    // 2) Build and write one SSTable per partition
+    bopts := buildTableOptions(db)
+    for pid, group := range parts {
+        if len(group) == 0 {
+            continue
+        }
+        builder := table.NewTableBuilder(bopts)
+        for _, e := range group {
+            // Decode any value-log pointer so we know how many bytes to reserve
+            var vp valuePointer
+            if e.vs.Meta&bitValuePointer != 0 {
+                vp.Decode(e.vs.Value)
+            }
+            builder.Add(e.key, e.vs, vp.Len)
+        }
+
+        // Finish building and commit
+        fileID := db.lc.reserveFileID()
+        var tbl *table.Table
+        var err error
+        if db.opt.InMemory {
+            data := builder.Finish()
+            tbl, err = table.OpenInMemoryTable(data, fileID, &bopts)
+        } else {
+            fname := table.NewFilename(fileID, db.opt.Dir)
+            tbl, err = table.CreateTable(fname, builder)
+        }
+        builder.Close()
+        if err != nil {
+            return y.Wrap(err, "creating partitioned L0 table")
+        }
+
+        // Register it in the correct partition
+        if err := db.lc.addLevel0PartitionedTable(int(pid), tbl); err != nil {
+            return err
+        }
+        _ = tbl.DecrRef()
+    }
+    return nil
+}
+
+// handleMemTableFlush must be run serially.
+func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
+    if db.opt.PartitionFanOut > 0 {
+        return db.handleMemTableFlushPartitioned(mt)
+    }
+    return db.handleMemTableFlushClassic(mt, dropPrefixes)
 }
 
 // flushMemtable must keep running until we send it an empty memtable. If there

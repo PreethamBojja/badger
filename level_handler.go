@@ -24,6 +24,7 @@ type levelHandler struct {
 	tables         []*table.Table
 	totalSize      int64
 	totalStaleSize int64
+	partitionedTables map[int][]*table.Table // pid → SSTables
 
 	// The following are initialized once and const.
 	level    int
@@ -172,11 +173,22 @@ func decrRefs(tables []*table.Table) error {
 }
 
 func newLevelHandler(db *DB, level int) *levelHandler {
-	return &levelHandler{
-		level:    level,
-		strLevel: fmt.Sprintf("l%d", level),
-		db:       db,
-	}
+	lh := &levelHandler{
+        level:    level,
+        strLevel: fmt.Sprintf("l%d", level),
+        db:       db,
+    }
+
+    if db.opt.PartitionFanOut > 0 {
+        // Compute how many partitions this level has: fanOut^(level+1)
+        parts := 1
+        for i := 0; i < level+1; i++ {
+            parts *= db.opt.PartitionFanOut
+        }
+        lh.partitionedTables = make(map[int][]*table.Table, parts)
+    }
+
+    return lh
 }
 
 // tryAddLevel0Table returns true if ok and no stalling.

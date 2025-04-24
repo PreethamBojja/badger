@@ -182,6 +182,16 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 	return s, nil
 }
 
+// getPartitionID returns which partition [0..fanOut^(level+1)-1] a key belongs to.
+func getPartitionID(level int, key []byte, fanOut int) uint32 {
+    parts := 1
+    for i := 0; i < level+1; i++ {
+        parts *= fanOut
+    }
+    h := y.Hash(key)
+    return (h % uint32(parts))
+}
+
 // Closes the tables, for cleanup in newLevelsController.  (We Close() instead of using DecrRef()
 // because that would delete the underlying files.)  We ignore errors, which is OK because tables
 // are read-only.
@@ -1587,6 +1597,24 @@ func (s *levelsController) addLevel0Table(t *table.Table) error {
 	}
 
 	return nil
+}
+
+// addLevel0PartitionedTable writes a new L0 table into partition pid.
+func (s *levelsController) addLevel0PartitionedTable(pid int, t *table.Table) error {
+    if !t.IsInmemory {
+        if err := s.kv.manifest.addChanges([]*pb.ManifestChange{
+            newCreateChange(t.ID(), 0, t.KeyID(), t.CompressionType()),
+        }); err != nil {
+            return err
+        }
+    }
+    // 2) insert into that partition’s list
+    l0 := s.levels[0]
+    l0.Lock()
+    l0.partitionedTables[pid] = append(l0.partitionedTables[pid], t)
+    l0.totalSize += int64(t.OnDiskSize())
+    l0.Unlock()
+    return nil
 }
 
 func (s *levelsController) close() error {
