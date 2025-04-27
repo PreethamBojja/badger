@@ -106,6 +106,9 @@ type Table struct {
 
 	IsInmemory bool // Set to true if the table is on level 0 and opened in memory.
 	opt        *Options
+
+	minTimestamp uint64
+    maxTimestamp uint64
 }
 
 type cheapIndex struct {
@@ -137,6 +140,12 @@ func (t *Table) KeyCount() uint32 { return t.cheapIndex().KeyCount }
 // OnDiskSize returns the total size of key-values stored in this table (including the
 // disk space occupied on the value log).
 func (t *Table) OnDiskSize() uint32 { return t.cheapIndex().OnDiskSize }
+
+// MinTimestamp returns the smallest version (ts) present in this table.
+func (t *Table) MinTimestamp() uint64 { return t.minTimestamp }
+
+// MaxTimestamp returns the largest version (ts) present in this table.
+func (t *Table) MaxTimestamp() uint64 { return t.maxTimestamp }
 
 // CompressionType returns the compression algorithm used for block compression.
 func (t *Table) CompressionType() options.CompressionType {

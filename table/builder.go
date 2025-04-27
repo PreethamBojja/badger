@@ -76,6 +76,7 @@ type Builder struct {
 	keyHashes     []uint32 // Used for building the bloomfilter.
 	opts          *Options
 	maxVersion    uint64
+	minVersion    uint64
 	onDiskSize    uint32
 	staleDataSize int
 
@@ -122,6 +123,7 @@ func NewTableBuilder(opts Options) *Builder {
 	b := &Builder{
 		alloc: opts.AllocPool.Get(sz, "TableBuilder"),
 		opts:  &opts,
+		minVersion: math.MaxUint64,
 	}
 	b.alloc.Tag = "Builder"
 	b.curBlock = &bblock{
@@ -209,9 +211,14 @@ func (b *Builder) keyDiff(newKey []byte) []byte {
 func (b *Builder) addHelper(key []byte, v y.ValueStruct, vpLen uint32) {
 	b.keyHashes = append(b.keyHashes, y.Hash(y.ParseKey(key)))
 
-	if version := y.ParseTs(key); version > b.maxVersion {
-		b.maxVersion = version
-	}
+	// Update min/max version
+    version := y.ParseTs(key)
+    if version < b.minVersion {
+        b.minVersion = version
+    }
+    if version > b.maxVersion {
+        b.maxVersion = version
+    }
 
 	// diffKey stores the difference of key with baseKey.
 	var diffKey []byte
