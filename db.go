@@ -341,9 +341,12 @@ func Open(opt Options) (*DB, error) {
 	// Initialize vlog struct.
 	db.vlog.init(db)
 
-	if !opt.ReadOnly {
-		db.closers.compactors = z.NewCloser(1)
-		db.lc.startCompact(db.closers.compactors)
+	if !opt.ReadOnly{
+		// No background compactions
+		if opt.PartitionFanOut != 0{
+			db.closers.compactors = z.NewCloser(1)
+			db.lc.startCompact(db.closers.compactors)
+		}
 
 		db.closers.memtable = z.NewCloser(1)
 		go func() {
@@ -1134,13 +1137,8 @@ func (db *DB) handleMemTableFlushPartitioned(mt *memTable) error {
         fileID := db.lc.reserveFileID()
         var tbl *table.Table
         var err error
-        if db.opt.InMemory {
-            data := builder.Finish()
-            tbl, err = table.OpenInMemoryTable(data, fileID, &bopts)
-        } else {
-            fname := table.NewFilename(fileID, db.opt.Dir)
-            tbl, err = table.CreateTable(fname, builder)
-        }
+		fname := table.NewFilename(fileID, db.opt.Dir)
+		tbl, err = table.CreateTable(fname, builder)
         builder.Close()
         if err != nil {
             return y.Wrap(err, "creating partitioned L0 table")
@@ -1179,6 +1177,10 @@ func (db *DB) flushMemtable(lc *z.Closer) {
 				db.opt.Errorf("error flushing memtable to disk: %v, retrying", err)
 				time.Sleep(time.Second)
 				continue
+			}
+			
+			if db.opt.PartitionFanOut > 0 {
+				db.lc.checkPartitionOverflow(0)
 			}
 
 			// Update s.imm. Need a lock.

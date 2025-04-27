@@ -1614,6 +1614,7 @@ func (s *levelsController) addLevel0PartitionedTable(pid int, t *table.Table) er
     l0.partitionedTables[pid] = append(l0.partitionedTables[pid], t)
     l0.totalSize += int64(t.OnDiskSize())
     l0.Unlock()
+	s.checkPartitionOverflow(0)
     return nil
 }
 
@@ -1805,4 +1806,152 @@ func (s *levelsController) keySplits(numPerTable int, prefix []byte) []string {
 	}
 	sort.Strings(splits)
 	return splits
+}
+
+// checkPartitionOverflow synchronously promotes any partition at `level` whose total size exceeds its quota.
+func (s *levelsController) checkPartitionOverflow(level int) {
+    fanOut := s.kv.opt.PartitionFanOut
+    if fanOut == 0 {
+        return // not in partitioned mode
+    }
+    // compute per-partition quota: targetSz[level] / fanOut^(level+1)
+    targs := s.levelTargets()
+    total := targs.targetSz[level]
+    parts := 1
+    for i := 0; i < level+1; i++ {
+        parts *= fanOut
+    }
+    quota := total / int64(parts)
+
+    lh := s.levels[level]
+    lh.RLock()
+    defer lh.RUnlock()
+
+    for pid, tbls := range lh.partitionedTables {
+        var sum int64
+        for _, t := range tbls {
+            sum += int64(t.OnDiskSize())
+        }
+        if sum > quota {
+            if err := s.promotePartition(level, pid); err != nil {
+                s.kv.opt.Warningf("partition compaction failed L%d pid=%d: %v", level, pid, err)
+			}
+        }
+    }
+}
+
+func (s *levelsController) promotePartition(level, pid int) error {
+    fanOut := s.kv.opt.PartitionFanOut
+    if fanOut == 0 {
+        return nil // not in partitioned mode
+    }
+
+    lh := s.levels[level]
+
+    // Detach old tables from this partition and adjust totalSize
+    lh.Lock()
+    old := lh.partitionedTables[pid]
+    lh.partitionedTables[pid] = nil
+
+    var totalOldSize int64
+    for _, t := range old {
+        totalOldSize += int64(t.OnDiskSize())
+    }
+    lh.totalSize -= totalOldSize
+    lh.Unlock()
+
+    // If there were no tables in this partition, nothing to do.
+    if len(old) == 0 {
+        return nil
+    }
+
+    // Compute min/max versions across all detached tables
+    var minV, maxV uint64
+    for i, t := range old {
+        v := t.MaxVersion()
+        if i == 0 || v < minV {
+            minV = v
+        }
+        if i == 0 || v > maxV {
+            maxV = v
+        }
+    }
+    // Split threshold is midpoint
+    Tth := (minV + maxV) / 2
+
+    // Build a MergeIterator over all the old tables
+    iters := make([]y.Iterator, 0, len(old))
+    for _, t := range old {
+        iters = append(iters, t.NewIterator(table.NOCACHE))
+    }
+    mit := table.NewMergeIterator(iters, false)
+    defer mit.Close()
+
+    bopts := buildTableOptions(s.kv)
+    coldBuilders := make([]*table.Builder, fanOut)
+    for i := range coldBuilders {
+        coldBuilders[i] = table.NewTableBuilder(bopts)
+    }
+    hotBuilder := table.NewTableBuilder(bopts)
+
+    for mit.Rewind(); mit.Valid(); mit.Next() {
+        key := mit.Key()
+        vs := mit.Value()
+
+        var vp valuePointer
+        if vs.Meta&bitValuePointer != 0 {
+            vp.Decode(vs.Value)
+        }
+
+        if vs.Version <= Tth {
+            child := getPartitionID(level+1, key, fanOut)
+            coldBuilders[child].Add(key, vs, vp.Len)
+        } else {
+            hotBuilder.Add(key, vs, vp.Len)
+        }
+    }
+
+    for child, b := range coldBuilders {
+        if b.Empty() {
+            b.Close()
+            continue
+        }
+        fileID := s.kv.lc.reserveFileID()
+        var tbl *table.Table
+        var err error
+		fname := table.NewFilename(fileID, s.kv.opt.Dir)
+		tbl, err = table.CreateTable(fname, b)
+        b.Close()
+        if err != nil {
+            return y.Wrap(err, "writing cold partition table")
+        }
+
+        // install into child partition
+        lhNext := s.levels[level+1]
+        lhNext.Lock()
+        lhNext.partitionedTables[child] = append(lhNext.partitionedTables[child], tbl)
+        lhNext.totalSize += int64(tbl.OnDiskSize())
+        lhNext.Unlock()
+    }
+
+    if !hotBuilder.Empty() {
+        fileID := s.kv.lc.reserveFileID()
+        var tbl *table.Table
+        var err error
+		fname := table.NewFilename(fileID, s.kv.opt.Dir)
+		tbl, err = table.CreateTable(fname, hotBuilder)
+        hotBuilder.Close()
+        if err != nil {
+            return y.Wrap(err, "writing hot partition table")
+        }
+
+        lh.Lock()
+        lh.partitionedTables[pid] = append(lh.partitionedTables[pid], tbl)
+        lh.totalSize += int64(tbl.OnDiskSize())
+        lh.Unlock()
+    } else {
+        hotBuilder.Close()
+    }
+
+    return nil
 }

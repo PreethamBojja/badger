@@ -94,7 +94,6 @@ func (s *levelHandler) deleteTables(toDel []*table.Table) error {
 		s.subtractSize(t)
 	}
 	s.tables = newTables
-
 	s.Unlock() // Unlock s _before_ we DecrRef our tables, which can be slow.
 
 	return decrRefs(toDel)
