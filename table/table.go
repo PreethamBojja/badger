@@ -267,7 +267,10 @@ func CreateTable(fname string, builder *Builder) (*Table, error) {
 	if err := z.Msync(mf.Data); err != nil {
 		return nil, y.Wrapf(err, "while calling msync on %s", fname)
 	}
-	return OpenTable(mf, *builder.opts)
+	t,err := OpenTable(mf, *builder.opts)
+	t.maxTimestamp = builder.maxVersion
+	t.minTimestamp = builder.minVersion
+	return t,err
 }
 
 // OpenTable assumes file has only one table and opens it. Takes ownership of fd upon function

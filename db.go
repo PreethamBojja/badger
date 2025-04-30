@@ -343,6 +343,7 @@ func Open(opt Options) (*DB, error) {
 
 	if !opt.ReadOnly{
 		// No background compactions
+		// Other way to do is set numCompactors to zero in options
 		if opt.PartitionFanOut != 0{
 			db.closers.compactors = z.NewCloser(1)
 			db.lc.startCompact(db.closers.compactors)
@@ -1099,7 +1100,6 @@ func (db *DB) handleMemTableFlushClassic(mt *memTable, dropPrefixes [][]byte) er
 func (db *DB) handleMemTableFlushPartitioned(mt *memTable) error {
     fanOut := db.opt.PartitionFanOut
 
-    // We'll temporarily hold key+ValueStruct pairs
     type kv struct {
         key []byte
         vs  y.ValueStruct
@@ -1109,7 +1109,6 @@ func (db *DB) handleMemTableFlushPartitioned(mt *memTable) error {
     parts := make(map[uint32][]kv, fanOut)
     itr := mt.sl.NewUniIterator(false)
     for itr.Rewind(); itr.Valid(); itr.Next() {
-        // Copy the key so it doesn’t get overwritten by the skiplist
         key := append([]byte(nil), itr.Key()...)
         vs := itr.Value()
         pid := getPartitionID(0, key, fanOut)

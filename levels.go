@@ -1866,18 +1866,16 @@ func (s *levelsController) promotePartition(level, pid int) error {
     }
 
     // Compute min/max versions across all detached tables
-    var minV, maxV uint64
-    for i, t := range old {
-        v := t.MaxVersion()
-        if i == 0 || v < minV {
-            minV = v
-        }
-        if i == 0 || v > maxV {
-            maxV = v
-        }
-    }
-    // Split threshold is midpoint
-    Tth := (minV + maxV) / 2
+    var minV, maxV uint64 = old[0].MinTimestamp(), old[0].MaxTimestamp()
+	for _ , t := range old[1:] {
+		if t.MinTimestamp() < minV {
+			minV = t.MinTimestamp()
+		}
+		if t.MaxTimestamp() > maxV {
+			maxV = t.MaxTimestamp()
+		}
+	}
+	Tth := (minV + maxV) / 2
 
     // Build a MergeIterator over all the old tables
     iters := make([]y.Iterator, 0, len(old))
@@ -1932,6 +1930,7 @@ func (s *levelsController) promotePartition(level, pid int) error {
         lhNext.partitionedTables[child] = append(lhNext.partitionedTables[child], tbl)
         lhNext.totalSize += int64(tbl.OnDiskSize())
         lhNext.Unlock()
+		s.checkPartitionOverflow(level+1)
     }
 
     if !hotBuilder.Empty() {
